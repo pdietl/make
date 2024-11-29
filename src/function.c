@@ -14,6 +14,10 @@ A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program.  If not, see <https://www.gnu.org/licenses/>.  */
 
+#include <assert.h>
+#include <math.h>
+#include <stdlib.h>
+
 #include "makeint.h"
 #include "filedef.h"
 #include "variable.h"
@@ -22,7 +26,6 @@ this program.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "os.h"
 #include "commands.h"
 #include "debug.h"
-
 
 struct function_table_entry
   {
@@ -950,6 +953,394 @@ func_let (char *o, char **argv, const char *funcname UNUSED)
   free (list);
 
   return o + strlen (o);
+}
+
+enum number_type
+{
+  t_integer,
+  t_floating
+};
+
+struct number
+{
+  enum number_type type;
+  union
+  {
+    double floating;
+    long long integer;
+  };
+};
+
+enum math_operation_init_type
+{
+  t_constant,
+  t_first_value,
+};
+
+struct math_operation_init
+{
+  enum math_operation_init_type init_type;
+  long long constant;
+};
+
+enum math_operation
+{
+  op_add,
+  op_subtract,
+  op_multiply,
+  op_max,
+  op_min,
+  op_abs,
+};
+
+/* Generic function for double */
+static inline double
+generic_math_op_double (double a, double b, enum math_operation op)
+{
+  switch (op)
+    {
+    case op_add:
+      return a + b;
+    case op_subtract:
+      return a - b;
+    case op_multiply:
+      return a * b;
+    case op_max:
+      return (a > b) ? a : b;
+    case op_min:
+      return (a < b) ? a : b;
+    case op_abs:
+      return fabs (a);
+    default:
+      /* Handle invalid operation */
+      return 0.0;
+    }
+}
+
+/* Generic function for long long int */
+static inline long long int
+generic_math_op_ll (long long int a, long long int b, enum math_operation op)
+{
+  switch (op)
+    {
+    case op_add:
+      return a + b;
+    case op_subtract:
+      return a - b;
+    case op_multiply:
+      return a * b;
+    case op_max:
+      return (a > b) ? a : b;
+    case op_min:
+      return (a < b) ? a : b;
+    case op_abs:
+      return llabs (a);
+    default:
+      /* Handle invalid operation */
+      return 0;
+    }
+}
+
+/* Generic macro to select the correct function based on type and
+   assert that the types of a and b are the same */
+#define generic_math_op(a, b, op)                                             \
+  ((void)sizeof (                                                             \
+       char[__builtin_types_compatible_p (typeof (a), typeof (b)) ? 1 : -1]), \
+   _Generic ((a),                                                             \
+       double: generic_math_op_double,                                        \
+       long long int: generic_math_op_ll) (a, b, op))
+
+static struct number
+parse_number (const char *s, const char *op_name)
+{
+  const char *beg = s;
+  const char *end = s + strlen (s) - 1;
+  char *endp;
+  struct number ret = { .integer = 0, .type = t_integer };
+
+  while (isspace(*s))
+    s++;
+
+  // We need to check this because even though we can command `strtoll` to
+  // parse only base-ten numbers, we can't command `strtod` to only parse
+  // base-10 numbers. Therefore, without this check `0xB` would get rejected by
+  // `strtoll`, but accepted by `strtod` and treated as `11.0`.
+  if (*s != '\0' && s[1] == 'x')
+    OSS (fatal, *expanding_var,
+         _ ("Invalid argument to %s function: '%s' not a number"), op_name, s);
+
+  errno = 0;
+  ret.integer = strtoll (beg, &endp, 10);
+  if (errno == ERANGE)
+    OSS (fatal, *expanding_var,
+         _ ("Invalid argument to %s function: '%s' out of range"), op_name, s);
+  if (endp == beg || endp <= end)
+    {
+      /* Empty or not an integer */
+      errno = 0;
+      ret.type = t_floating;
+      ret.floating = strtod (beg, &endp);
+      if (errno == ERANGE)
+        OSS (fatal, *expanding_var,
+             _ ("Invalid argument to %s function: '%s' out of range"), op_name,
+             s);
+      if (endp == beg || endp <= end)
+        OSS (fatal, *expanding_var,
+             _ ("Invalid argument to %s function: '%s'"), op_name, s);
+    }
+
+  return ret;
+}
+
+static char *
+number_to_string (char *o, struct number n)
+{
+  char buffer[64];
+  if (n.type == t_integer)
+    snprintf (buffer, sizeof buffer, "%lld", n.integer);
+  else
+    {
+      char *end;
+      snprintf (buffer, sizeof buffer, "%.14f", n.floating);
+      end = buffer + strlen (buffer) - 1;
+      while (end > buffer && *end == '0')
+        *end-- = '\0'; // Remove trailing zero
+
+      // If there's a decimal point left, append a '0' to keep a single zero
+      if (*end == '.')
+        {
+          end++;
+          *end++ = '0';
+          *end = '\0';
+        }
+    }
+  return variable_buffer_output (o, buffer, strlen (buffer));
+}
+
+struct number
+perform_math_op (enum math_operation op, const char *op_name,
+                 struct math_operation_init init, char **argv)
+{
+  struct number parsed;
+  struct number total;
+
+  if (init.init_type == t_first_value)
+    {
+      assert (*argv != NULL);
+
+      total = parse_number (*argv, op_name);
+      argv++;
+    }
+  else
+    {
+      total.type = t_integer;
+      total.integer = init.constant;
+    }
+
+  for (; *argv != NULL; argv++)
+    {
+      parsed = parse_number (*argv, op_name);
+      if (total.type == t_integer)
+        {
+          if (parsed.type == t_integer)
+            total.integer
+                = generic_math_op (total.integer, parsed.integer, op);
+          else // `parsed` is floating, `total`` is integer. So, convert total
+               // to floating
+            {
+              total.type = t_floating;
+              total.floating = generic_math_op ((double)total.integer,
+                                                parsed.floating, op);
+            }
+        }
+      else // `total` is floating
+        {
+          if (parsed.type == t_integer)
+            total.floating
+                = generic_math_op (total.floating, (double)parsed.integer, op);
+          else // `parsed` is floating, `total`` is floating
+            total.floating
+                = generic_math_op (total.floating, parsed.floating, op);
+        }
+    }
+
+  return total;
+}
+
+static char *
+func_add (char *o, char **argv, const char *funcname)
+{
+  struct number n = perform_math_op (
+      op_add, funcname,
+      (struct math_operation_init){ .init_type = t_constant, .constant = 0 },
+      argv);
+
+  return number_to_string (o, n);
+}
+
+static char *
+func_subtract (char *o, char **argv, const char *funcname)
+{
+  struct math_operation_init init;
+  struct number n;
+
+  // If we received a single argument, negate it.
+  if (argv[0] != NULL && argv[1] == NULL)
+    {
+      init.init_type = t_constant;
+      init.constant = 0;
+    }
+  else
+    init.init_type = t_first_value;
+
+  n = perform_math_op (op_subtract, funcname, init, argv);
+
+  return number_to_string (o, n);
+}
+
+static char *
+func_multiply (char *o, char **argv, const char *funcname)
+{
+  struct number n = perform_math_op (
+      op_multiply, funcname,
+      (struct math_operation_init){ .init_type = t_constant, .constant = 1 },
+      argv);
+
+  return number_to_string (o, n);
+}
+
+static char *
+func_divide (char *o, char **argv, const char *funcname)
+{
+  struct number parsed;
+  struct number total;
+
+  // We either received one argument and we will return its inverse or we will use it as
+  // our initial value for `total` and carry on dividing.
+  total = parse_number (*argv, funcname);
+
+  if (total.type == t_integer ? total.integer == 0 : total.floating == 0.0)
+    OS (fatal, *expanding_var,
+      _ ("Invalid argument to %s function: argument cannot be zero"), funcname);
+
+  // If we received a single argument, compute its inverse.
+  if (argv[0] != NULL && argv[1] == NULL)
+    {
+      if (total.type == t_integer)
+        total.integer = 1 / total.integer;
+      else
+        total.floating = 1.0 / total.floating;
+
+      return number_to_string (o, total);
+    }
+
+  // We are using argv[0] as our initial value for total, so skip past it.
+  argv++;
+
+  for (; *argv != NULL; argv++)
+    {
+      parsed = parse_number (*argv, funcname);
+
+      if (parsed.type == t_integer ? parsed.integer == 0 : parsed.floating == 0.0)
+        OS (fatal, *expanding_var,
+          _ ("Invalid argument to %s function: argument cannot be zero"), funcname);
+      if (total.type == t_integer)
+        {
+          if (parsed.type == t_integer)
+            total.integer /= parsed.integer;
+          else // `parsed` is floating, `total`` is integer. So, convert total
+               // to floating
+            {
+              total.type = t_floating;
+              total.floating = (double)total.integer / parsed.floating;
+            }
+        }
+      else // `total` is floating
+        {
+          if (parsed.type == t_integer)
+            total.floating /= (double)parsed.integer;
+          else // `parsed` is floating, `total`` is floating
+            total.floating /= parsed.floating;
+        }
+    }
+
+  return number_to_string (o, total);
+}
+
+static char *
+func_modulus (char *o, char **argv, const char *funcname)
+{
+  struct number parsed;
+  struct number total;
+
+  // We require exactly two arguments
+  assert(argv[0] != NULL && argv[1] != NULL && argv[2] == NULL);
+
+  // We either received one argument and we will return its inverse or we will use it as
+  // our initial value for `total` and carry on dividing.
+  total = parse_number (argv[0], funcname);
+
+  if (total.type == t_floating)
+    OS (fatal, *expanding_var,
+      _ ("Invalid argument to %s function: argument must be an integer"), funcname);
+
+  if (total.integer == 0)
+    OS (fatal, *expanding_var,
+      _ ("Invalid argument to %s function: argument cannot be zero"), funcname);
+
+  parsed = parse_number (argv[1], funcname);
+
+  if (parsed.type == t_floating)
+    OS (fatal, *expanding_var,
+      _ ("Invalid argument to %s function: argument must be an integer"), funcname);
+
+  if (parsed.integer == 0)
+    OS (fatal, *expanding_var,
+      _ ("Invalid argument to %s function: argument cannot be zero"), funcname);
+
+  total.integer %= parsed.integer;
+
+  return number_to_string (o, total);
+}
+
+static char *
+func_maximum (char *o, char **argv, const char *funcname)
+{
+  struct number n = perform_math_op (
+      op_max, funcname,
+      (struct math_operation_init){ .init_type = t_first_value},
+      argv);
+
+  return number_to_string (o, n);
+}
+
+static char *
+func_minimum (char *o, char **argv, const char *funcname)
+{
+  struct number n = perform_math_op (
+      op_min, funcname,
+      (struct math_operation_init){ .init_type = t_first_value},
+      argv);
+
+  return number_to_string (o, n);
+}
+
+static char *
+func_absolute_value (char *o, char **argv, const char *funcname)
+{
+  struct number n;
+
+  // We accept exactly one argumnent
+  assert(argv[0] != NULL && argv[1] == NULL);
+
+  n = parse_number (argv[0], funcname);
+
+  if (n.type == t_integer)
+    n.integer = llabs(n.integer);
+  else
+    n.floating = fabs(n.floating);
+
+  return number_to_string (o, n);
 }
 
 struct a_word
@@ -2394,6 +2785,8 @@ static char *func_call (char *o, char **argv, const char *funcname);
 static const struct function_table_entry function_table_init[] =
 {
  /*         Name            MIN MAX EXP? Function */
+  FT_ENTRY ("abs",           1,  1,  1,  func_absolute_value),
+  FT_ENTRY ("add",           1,  0,  1,  func_add),
   FT_ENTRY ("abspath",       0,  1,  1,  func_abspath),
   FT_ENTRY ("addprefix",     2,  2,  1,  func_addsuffix_addprefix),
   FT_ENTRY ("addsuffix",     2,  2,  1,  func_addsuffix_addprefix),
@@ -2401,6 +2794,7 @@ static const struct function_table_entry function_table_init[] =
   FT_ENTRY ("basename",      0,  1,  1,  func_basename_dir),
   FT_ENTRY ("call",          1,  0,  1,  func_call),
   FT_ENTRY ("dir",           0,  1,  1,  func_basename_dir),
+  FT_ENTRY ("div",           1,  0,  1,  func_divide),
   FT_ENTRY ("error",         0,  1,  1,  func_error),
   FT_ENTRY ("eval",          0,  1,  1,  func_eval),
   FT_ENTRY ("file",          1,  2,  1,  func_file),
@@ -2416,6 +2810,10 @@ static const struct function_table_entry function_table_init[] =
   FT_ENTRY ("join",          2,  2,  1,  func_join),
   FT_ENTRY ("lastword",      0,  1,  1,  func_lastword),
   FT_ENTRY ("let",           3,  3,  0,  func_let),
+  FT_ENTRY ("max",           1,  0,  1,  func_maximum),
+  FT_ENTRY ("min",           1,  0,  1,  func_minimum),
+  FT_ENTRY ("mod",           2,  2,  1,  func_modulus),
+  FT_ENTRY ("mul",           1,  0,  1,  func_multiply),
   FT_ENTRY ("notdir",        0,  1,  1,  func_notdir_suffix),
   FT_ENTRY ("or",            1,  0,  0,  func_or),
   FT_ENTRY ("origin",        0,  1,  1,  func_origin),
@@ -2424,6 +2822,7 @@ static const struct function_table_entry function_table_init[] =
   FT_ENTRY ("shell",         0,  1,  1,  func_shell),
   FT_ENTRY ("sort",          0,  1,  1,  func_sort),
   FT_ENTRY ("strip",         0,  1,  1,  func_strip),
+  FT_ENTRY ("sub",           1,  0,  1,  func_subtract),
   FT_ENTRY ("subst",         3,  3,  1,  func_subst),
   FT_ENTRY ("suffix",        0,  1,  1,  func_notdir_suffix),
   FT_ENTRY ("value",         0,  1,  1,  func_value),
