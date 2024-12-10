@@ -14,7 +14,6 @@ A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program.  If not, see <https://www.gnu.org/licenses/>.  */
 
-#include <assert.h>
 #include <math.h>
 #include <stdlib.h>
 
@@ -1011,10 +1010,8 @@ generic_math_op_double (double a, double b, enum math_operation op)
       return (a < b) ? a : b;
     case op_abs:
       return fabs (a);
-    default:
-      /* Handle invalid operation */
-      return 0.0;
     }
+  return 0;
 }
 
 /* Generic function for long long int */
@@ -1058,14 +1055,13 @@ parse_number (const char *s, const char *op_name)
   char *endp;
   struct number ret = { .integer = 0, .type = t_integer };
 
-  while (isspace(*s))
-    s++;
+  NEXT_TOKEN (s);
 
   // We need to check this because even though we can command `strtoll` to
   // parse only base-ten numbers, we can't command `strtod` to only parse
   // base-10 numbers. Therefore, without this check `0xB` would get rejected by
   // `strtoll`, but accepted by `strtod` and treated as `11.0`.
-  if (*s != '\0' && s[1] == 'x')
+  if (*s != '\0' && ( s[1] == 'x' || s[1] == 'X'))
     OSS (fatal, *expanding_var,
          _ ("Invalid argument to %s function: '%s' not a number"), op_name, s);
 
@@ -1126,8 +1122,6 @@ perform_math_op (enum math_operation op, const char *op_name,
 
   if (init.init_type == t_first_value)
     {
-      assert (*argv != NULL);
-
       total = parse_number (*argv, op_name);
       argv++;
     }
@@ -1179,7 +1173,7 @@ func_add (char *o, char **argv, const char *funcname)
 }
 
 static char *
-func_subtract (char *o, char **argv, const char *funcname)
+func_sub (char *o, char **argv, const char *funcname)
 {
   struct math_operation_init init;
   struct number n;
@@ -1199,7 +1193,7 @@ func_subtract (char *o, char **argv, const char *funcname)
 }
 
 static char *
-func_multiply (char *o, char **argv, const char *funcname)
+func_mul (char *o, char **argv, const char *funcname)
 {
   struct number n = perform_math_op (
       op_multiply, funcname,
@@ -1210,7 +1204,7 @@ func_multiply (char *o, char **argv, const char *funcname)
 }
 
 static char *
-func_divide (char *o, char **argv, const char *funcname)
+func_div (char *o, char **argv, const char *funcname)
 {
   struct number parsed;
   struct number total;
@@ -1268,43 +1262,34 @@ func_divide (char *o, char **argv, const char *funcname)
 }
 
 static char *
-func_modulus (char *o, char **argv, const char *funcname)
+func_mod (char *o, char **argv, const char *funcname)
 {
-  struct number parsed;
-  struct number total;
+  struct number divisor;
+  struct number dividend;
 
-  // We require exactly two arguments
-  assert(argv[0] != NULL && argv[1] != NULL && argv[2] == NULL);
+  dividend = parse_number (argv[0], funcname);
 
-  // We either received one argument and we will return its inverse or we will use it as
-  // our initial value for `total` and carry on dividing.
-  total = parse_number (argv[0], funcname);
-
-  if (total.type == t_floating)
+  if (dividend.type == t_floating)
     OS (fatal, *expanding_var,
       _ ("Invalid argument to %s function: argument must be an integer"), funcname);
 
-  if (total.integer == 0)
-    OS (fatal, *expanding_var,
-      _ ("Invalid argument to %s function: argument cannot be zero"), funcname);
+  divisor = parse_number (argv[1], funcname);
 
-  parsed = parse_number (argv[1], funcname);
-
-  if (parsed.type == t_floating)
+  if (divisor.type == t_floating)
     OS (fatal, *expanding_var,
       _ ("Invalid argument to %s function: argument must be an integer"), funcname);
 
-  if (parsed.integer == 0)
+  if (divisor.integer == 0)
     OS (fatal, *expanding_var,
-      _ ("Invalid argument to %s function: argument cannot be zero"), funcname);
+      _ ("Invalid argument to %s function: dividor cannot be zero"), funcname);
 
-  total.integer %= parsed.integer;
+  dividend.integer %= divisor.integer;
 
-  return number_to_string (o, total);
+  return number_to_string (o, dividend);
 }
 
 static char *
-func_maximum (char *o, char **argv, const char *funcname)
+func_max (char *o, char **argv, const char *funcname)
 {
   struct number n = perform_math_op (
       op_max, funcname,
@@ -1315,7 +1300,7 @@ func_maximum (char *o, char **argv, const char *funcname)
 }
 
 static char *
-func_minimum (char *o, char **argv, const char *funcname)
+func_min (char *o, char **argv, const char *funcname)
 {
   struct number n = perform_math_op (
       op_min, funcname,
@@ -1326,12 +1311,9 @@ func_minimum (char *o, char **argv, const char *funcname)
 }
 
 static char *
-func_absolute_value (char *o, char **argv, const char *funcname)
+func_abs (char *o, char **argv, const char *funcname)
 {
   struct number n;
-
-  // We accept exactly one argumnent
-  assert(argv[0] != NULL && argv[1] == NULL);
 
   n = parse_number (argv[0], funcname);
 
@@ -2785,7 +2767,7 @@ static char *func_call (char *o, char **argv, const char *funcname);
 static const struct function_table_entry function_table_init[] =
 {
  /*         Name            MIN MAX EXP? Function */
-  FT_ENTRY ("abs",           1,  1,  1,  func_absolute_value),
+  FT_ENTRY ("abs",           1,  1,  1,  func_abs),
   FT_ENTRY ("add",           1,  0,  1,  func_add),
   FT_ENTRY ("abspath",       0,  1,  1,  func_abspath),
   FT_ENTRY ("addprefix",     2,  2,  1,  func_addsuffix_addprefix),
@@ -2794,7 +2776,7 @@ static const struct function_table_entry function_table_init[] =
   FT_ENTRY ("basename",      0,  1,  1,  func_basename_dir),
   FT_ENTRY ("call",          1,  0,  1,  func_call),
   FT_ENTRY ("dir",           0,  1,  1,  func_basename_dir),
-  FT_ENTRY ("div",           1,  0,  1,  func_divide),
+  FT_ENTRY ("div",           1,  0,  1,  func_div),
   FT_ENTRY ("error",         0,  1,  1,  func_error),
   FT_ENTRY ("eval",          0,  1,  1,  func_eval),
   FT_ENTRY ("file",          1,  2,  1,  func_file),
@@ -2810,10 +2792,10 @@ static const struct function_table_entry function_table_init[] =
   FT_ENTRY ("join",          2,  2,  1,  func_join),
   FT_ENTRY ("lastword",      0,  1,  1,  func_lastword),
   FT_ENTRY ("let",           3,  3,  0,  func_let),
-  FT_ENTRY ("max",           1,  0,  1,  func_maximum),
-  FT_ENTRY ("min",           1,  0,  1,  func_minimum),
-  FT_ENTRY ("mod",           2,  2,  1,  func_modulus),
-  FT_ENTRY ("mul",           1,  0,  1,  func_multiply),
+  FT_ENTRY ("max",           1,  0,  1,  func_max),
+  FT_ENTRY ("min",           1,  0,  1,  func_min),
+  FT_ENTRY ("mod",           2,  2,  1,  func_mod),
+  FT_ENTRY ("mul",           1,  0,  1,  func_mul),
   FT_ENTRY ("notdir",        0,  1,  1,  func_notdir_suffix),
   FT_ENTRY ("or",            1,  0,  0,  func_or),
   FT_ENTRY ("origin",        0,  1,  1,  func_origin),
@@ -2822,7 +2804,7 @@ static const struct function_table_entry function_table_init[] =
   FT_ENTRY ("shell",         0,  1,  1,  func_shell),
   FT_ENTRY ("sort",          0,  1,  1,  func_sort),
   FT_ENTRY ("strip",         0,  1,  1,  func_strip),
-  FT_ENTRY ("sub",           1,  0,  1,  func_subtract),
+  FT_ENTRY ("sub",           1,  0,  1,  func_sub),
   FT_ENTRY ("subst",         3,  3,  1,  func_subst),
   FT_ENTRY ("suffix",        0,  1,  1,  func_notdir_suffix),
   FT_ENTRY ("value",         0,  1,  1,  func_value),

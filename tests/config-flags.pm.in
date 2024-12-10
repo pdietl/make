@@ -4,17 +4,19 @@
 # during the tests.
 
 %CONFIG_FLAGS = (
-    AM_LDFLAGS      => '@AM_LDFLAGS@',
-    AR              => '@AR@',
-    CC              => '@CC@',
-    CFLAGS          => '@CFLAGS@',
-    CPP             => '@CPP@',
-    CPPFLAGS        => '@CPPFLAGS@',
-    GUILE_CFLAGS    => '@GUILE_CFLAGS@',
-    GUILE_LIBS      => '@GUILE_LIBS@',
-    LDFLAGS         => '@LDFLAGS@',
-    LIBS            => '@LIBS@',
-    USE_SYSTEM_GLOB => '@USE_SYSTEM_GLOB@'
+    AM_LDFLAGS        => '@AM_LDFLAGS@',
+    AR                => '@AR@',
+    CC                => '@CC@',
+    CFLAGS            => '@CFLAGS@',
+    CPP               => '@CPP@',
+    CPPFLAGS          => '@CPPFLAGS@',
+    GUILE_CFLAGS      => '@GUILE_CFLAGS@',
+    GUILE_LIBS        => '@GUILE_LIBS@',
+    LDFLAGS           => '@LDFLAGS@',
+    LIBS              => '@LIBS@',
+    USE_SYSTEM_GLOB   => '@USE_SYSTEM_GLOB@',
+    LONG_LONG_INT_MAX => '@LONG_LONG_INT_MAX@',
+    LONG_LONG_INT_MIN => '@LONG_LONG_INT_MIN@'
 );
 
 1;

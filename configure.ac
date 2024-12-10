@@ -555,6 +555,40 @@ AC_CONFIG_FILES([build.cfg tests/config-flags.pm \
 # Put build.sh in the build directory so it's easy to find
 AC_CONFIG_LINKS([build.sh:build.sh])
 
+AC_MSG_CHECKING([for LLONG_MAX and LLONG_MIN values])
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM(
+[[
+#include <limits.h>
+#include <stdio.h>
+]],
+[[
+#ifdef LLONG_MAX
+    printf("%lld\n%lld\n", (long long)LLONG_MAX, (long long)LLONG_MIN);
+    return 0;
+#else
+    return 1;
+#endif
+]]
+  )],
+  [ # Linking succeeded
+    AC_MSG_RESULT([yes])
+    LLVALS=`./conftest`
+    rm -f conftest conftest.c
+    LONG_LONG_INT_MAX=`echo "$LLVALS" | sed -n '1p'`
+    LONG_LONG_INT_MIN=`echo "$LLVALS" | sed -n '2p'`
+  ],
+  [ # Linking failed
+    AC_MSG_RESULT([no])
+    LONG_LONG_INT_MAX=""
+    LONG_LONG_INT_MIN=""
+  ],
+AC_MSG_ERROR([This must succeed])
+)
+
+AC_SUBST([LONG_LONG_INT_MAX], [$LONG_LONG_INT_MAX])
+AC_SUBST([LONG_LONG_INT_MIN], [$LONG_LONG_INT_MIN])
+
 # OK, do it!
 
 AC_OUTPUT
